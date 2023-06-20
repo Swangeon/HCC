@@ -7,6 +7,10 @@
 #include <KernelExport.h>
 #include <OS.h>
 
+#include "BufferQueue.h"
+
+#include <net_buffer.h>
+
 #include <fcntl.h>
 // #include <fsproto.h>
 #include <net/if.h>
@@ -19,13 +23,15 @@
 #include <unistd.h>
 
 
-#define TUN_MODULE_NAME "tun"
+#define TUN_MODULE_NAME "tun_driver"
 
 #define NET_TUN_MODULE_NAME "network/devices/tun/v1"
 
-const char * device_names[] = {"net/" TUN_MODULE_NAME, NULL};
+const char * device_names[] = {"misc/" TUN_MODULE_NAME, NULL};
 
 int32 api_version = B_CUR_DRIVER_API_VERSION;
+
+struct net_buffer_module_info* gBufferModule;
 
 
 status_t tun_open(const char *name, uint32 flags, void* cookie);
@@ -56,7 +62,7 @@ status_t
 init_hardware(void)
 {
 	/* No Hardware */
-	return B_OK; // B_INTERFACE_ERROR_BASE;
+	return B_OK;
 }
 
 
@@ -78,48 +84,19 @@ uninit_driver(void)
 status_t
 tun_open(const char *name, uint32 flags, void *cookie)
 {
-// 	status_t err = B_OK;
-// 	(void)name; (void)flags;
-// 	/* XXX: add O_NONBLOCK + FIONBIO */
-// #if DEBUG > 1
-// 	dprintf("tun:open(%s, 0x%08lx,)\n", name, flags);
-// #endif
-// 	err = get_module(BONE_UTIL_MOD_NAME, (struct module_info **)&gUtil);
-// 	if (err < B_OK)
-// 		return err;
-// 	err = get_module(TUN_INTERFACE_MODULE, (struct module_info **)&gIfaceModule);
-// 	if (err < B_OK) {
-// 		put_module(BONE_UTIL_MOD_NAME);
-// 		return err;
-// 	}
-
-// 	/* XXX: FIXME, still not ok (rescan) */
-// 	if (atomic_add(&if_mod_ref_count, 1) < 1) /* force one more open to keep loaded */
-// 		get_module(TUN_INTERFACE_MODULE, (struct module_info **)&gIfaceModule);
-
-// 	*cookie = (void*)malloc(sizeof(cookie_t));
-// 	if (*cookie == NULL) {
-// 		dprintf("tun_open : error allocating cookie\n");
-// 		goto err0;
-// 	}
-// 	memset(*cookie, 0, sizeof(cookie_t));
-// 	(*cookie)->blocking_io = true;
+	/* Make interface here */
+	dprintf("tun:open_driver()\n");
+	BufferQueue userQueue(32768);
+	BufferQueue appQueue(32768);
 	return B_OK;
-
-// err1:
-// 	dprintf("tun_open : cleanup : will free cookie\n");
-// 	free(*cookie);
-// 	*cookie = NULL;
-// 	put_module(TUN_INTERFACE_MODULE);
-// 	put_module(BONE_UTIL_MOD_NAME);
-// err0:
-// 	return B_ERROR;
 }
 
 
 status_t
 tun_close(void *cookie)
 {
+	/* Close interface here */
+	dprintf("tun:close_driver()\n");
 	// (void)cookie;
 	return B_OK;
 }
@@ -189,6 +166,37 @@ tun_ioctl(void *cookie, uint32 op, void *data, size_t len)
 status_t
 tun_read(void *cookie, off_t position, void *data, size_t *numbytes)
 {
+	/* Read data from driver */
+	dprintf("TUN: Reading %li bytes of data\n", *numbytes);
+	// net_buffer* buffer = NULL;
+	// status_t status = appQueue.Get(*numbytes, true, &buffer);
+	// if (status == B_OK) {
+	// 	ASSERT(buffer->size == *numbytes);
+	// 	gBufferModule->free(buffer);
+	// } else {
+	// 	dprintf("TUN: Could not get queue");
+	// 	return B_ERROR;
+	// }
+	// void* temp = malloc(buffer->size);
+	// if (temp == NULL) {
+	// 	dprintf("TUN: Failed Allocating temp\n");
+	// 	return B_ERROR;
+	// }
+	// status_t gen = gBufferModule->read(buffer, buffer->offset, temp, buffer->size);
+	// if (gen != B_OK) {
+	// 	dprintf("TUN: Failed Reading buffer");
+	// 	return B_ERROR;
+	// }
+	// uint8_t* bytePtr = static_cast<uint8_t*>(temp);
+	// for (size_t i = 0; i < buffer->size; i++) {
+    // 	uint8_t byte = *(bytePtr + i);
+	// 	dprintf("%02x", byte);
+	// }
+	// memcpy(data, temp, buffer->size);
+	// if (data == NULL) {
+	// 	dprintf("TUN: Failed memcpy");
+	// 	return B_ERROR;
+	// }
 	return B_OK;
 }
 
@@ -196,6 +204,23 @@ tun_read(void *cookie, off_t position, void *data, size_t *numbytes)
 status_t
 tun_write(void *cookie, off_t position, const void *data, size_t *numbytes)
 {
+	/* Write data to driver */
+	dprintf("tun:write_driver(): writting %li bytes\n", *numbytes);
+	// net_buffer *buffer = gBufferModule->create(256);
+	// if (buffer == NULL) {
+	// 	dprintf("creating a buffer failed!\n");
+	// 	return B_ERROR;
+	// }
+	// dprintf("creating the net_buffer\n");
+	// status_t status = gBufferModule->append(buffer, data, *numbytes);
+	// if (status != B_OK) {
+	// 	dprintf("appending %lu bytes to buffer %p failed: %s\n", *numbytes, buffer,
+	// 		strerror(status));
+	// 	gBufferModule->free(buffer);
+	// 	return B_ERROR;
+	// }
+	// appQueue.Add(buffer)
+	// dprintf("tun:write_driver(): ready to append net_buffer\n");
 	return B_OK;
 }
 
@@ -203,7 +228,6 @@ tun_write(void *cookie, off_t position, const void *data, size_t *numbytes)
 status_t
 tun_readv(void *cookie, off_t position, const iovec *vec, size_t count, size_t *numBytes)
 {
-	dprintf("tun: readv(, %Ld, , %ld)\n", position, count);
 	return EOPNOTSUPP;
 }
 
@@ -211,7 +235,6 @@ tun_readv(void *cookie, off_t position, const iovec *vec, size_t count, size_t *
 status_t
 tun_writev(void *cookie, off_t position, const iovec *vec, size_t count, size_t *numBytes)
 {
-	dprintf("tun: writev(, %Ld, , %ld)\n", position, count);
 	return EOPNOTSUPP;
 }
 
