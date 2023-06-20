@@ -34,7 +34,7 @@ int32 api_version = B_CUR_DRIVER_API_VERSION;
 struct net_buffer_module_info* gBufferModule;
 
 
-status_t tun_open(const char *name, uint32 flags, void* cookie);
+status_t tun_open(const char *name, uint32 flags, void **cookie);
 status_t tun_close(void *cookie);
 status_t tun_free(void *cookie);
 status_t tun_ioctl(void *cookie, uint32 op, void *data, size_t len);
@@ -81,14 +81,14 @@ uninit_driver(void)
 }
 
 
-extern "C" { status_t tun_open(const char *name, uint32 flags, void **cookie)
-	{
-		/* Make interface here */
-		dprintf("tun:open_driver()\n");
-		// char* name = "OpenVPN";
-		*cookie = NULL;
-		return B_OK;
-	}
+status_t 
+tun_open(const char *name, uint32 flags, void **cookie)
+{
+	/* Make interface here */
+	dprintf("tun:open_driver()\n");
+	// char* name = "OpenVPN";
+	*cookie = NULL;
+	return B_OK;
 }
 
 
