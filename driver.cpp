@@ -168,35 +168,6 @@ tun_read(void *cookie, off_t position, void *data, size_t *numbytes)
 {
 	/* Read data from driver */
 	dprintf("TUN: Reading %li bytes of data\n", *numbytes);
-	// net_buffer* buffer = NULL;
-	// status_t status = appQueue.Get(*numbytes, true, &buffer);
-	// if (status == B_OK) {
-	// 	ASSERT(buffer->size == *numbytes);
-	// 	gBufferModule->free(buffer);
-	// } else {
-	// 	dprintf("TUN: Could not get queue");
-	// 	return B_ERROR;
-	// }
-	// void* temp = malloc(buffer->size);
-	// if (temp == NULL) {
-	// 	dprintf("TUN: Failed Allocating temp\n");
-	// 	return B_ERROR;
-	// }
-	// status_t gen = gBufferModule->read(buffer, buffer->offset, temp, buffer->size);
-	// if (gen != B_OK) {
-	// 	dprintf("TUN: Failed Reading buffer");
-	// 	return B_ERROR;
-	// }
-	// uint8_t* bytePtr = static_cast<uint8_t*>(temp);
-	// for (size_t i = 0; i < buffer->size; i++) {
-    // 	uint8_t byte = *(bytePtr + i);
-	// 	dprintf("%02x", byte);
-	// }
-	// memcpy(data, temp, buffer->size);
-	// if (data == NULL) {
-	// 	dprintf("TUN: Failed memcpy");
-	// 	return B_ERROR;
-	// }
 	return B_OK;
 }
 
@@ -206,21 +177,6 @@ tun_write(void *cookie, off_t position, const void *data, size_t *numbytes)
 {
 	/* Write data to driver */
 	dprintf("tun:write_driver(): writting %li bytes\n", *numbytes);
-	// net_buffer *buffer = gBufferModule->create(256);
-	// if (buffer == NULL) {
-	// 	dprintf("creating a buffer failed!\n");
-	// 	return B_ERROR;
-	// }
-	// dprintf("creating the net_buffer\n");
-	// status_t status = gBufferModule->append(buffer, data, *numbytes);
-	// if (status != B_OK) {
-	// 	dprintf("appending %lu bytes to buffer %p failed: %s\n", *numbytes, buffer,
-	// 		strerror(status));
-	// 	gBufferModule->free(buffer);
-	// 	return B_ERROR;
-	// }
-	// appQueue.Add(buffer)
-	// dprintf("tun:write_driver(): ready to append net_buffer\n");
 	return B_OK;
 }
 
