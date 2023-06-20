@@ -81,14 +81,14 @@ uninit_driver(void)
 }
 
 
-status_t
-tun_open(const char *name, uint32 flags, void *cookie)
-{
-	/* Make interface here */
-	dprintf("tun:open_driver()\n");
-	BufferQueue userQueue(32768);
-	BufferQueue appQueue(32768);
-	return B_OK;
+extern "C" { status_t tun_open(const char *name, uint32 flags, void **cookie)
+	{
+		/* Make interface here */
+		dprintf("tun:open_driver()\n");
+		// char* name = "OpenVPN";
+		*cookie = NULL;
+		return B_OK;
+	}
 }
 
 
