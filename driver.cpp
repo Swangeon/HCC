@@ -21,6 +21,7 @@
 #include <sys/param.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <util/queue.h>
 
 
 #define TUN_MODULE_NAME "tun_driver"
@@ -58,6 +59,11 @@ device_hooks tun_hooks = {
 };
 
 
+typedef struct bytequeue : queue {
+	uint8 *element;
+} bytequeue;
+
+
 status_t
 init_hardware(void)
 {
@@ -80,13 +86,30 @@ uninit_driver(void)
 	dprintf("tun:uninit_driver()\n");
 }
 
-
+/* New Code
+status_t
+tun_open(const char *name, uint32 flags, void **cookie)
+{
+	/* Make interface here /
+	dprintf("tun:open_driver with name %s \n", name);
+	bytequeue *appQueue = NULL;
+	status_t status = queue_init(appQueue);
+	if (status != B_OK) {
+		dprintf("bytequeue failed init\n");
+		return B_ERROR;
+	}
+	dprintf("bytequeue initialized\n");
+	*cookie = NULL;
+	// user_memcpy(*cookie, name, 7);
+	return B_OK;
+}
+*/
+// Old code
 status_t 
 tun_open(const char *name, uint32 flags, void **cookie)
 {
 	/* Make interface here */
-	dprintf("tun:open_driver()\n");
-	// char* name = "OpenVPN";
+	dprintf("tun:open_driver with name %s \n", name);
 	*cookie = NULL;
 	return B_OK;
 }
