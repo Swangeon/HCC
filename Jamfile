@@ -1,12 +1,27 @@
-SubDir HAIKU_TOP src add-ons kernel drivers network tun ;
+SubDir HAIKU_TOP src add-ons kernel drivers misc ;
 
 UsePrivateHeaders drivers ;
-UsePrivateSystemHeaders ;
 UsePrivateKernelHeaders ;
-UsePrivateHeaders kernel ;
-# For net_tun.h
+UsePrivateSystemHeaders ;
 UsePrivateHeaders net ;
+UsePrivateHeaders kernel ;
 
-KernelAddon <driver>tun_d :
-	tun_d.c
+KernelAddon <driver>mem :
+	mem.c
+	;
+
+KernelAddon <driver>poke :
+	poke.cpp
+	;
+
+KernelAddon <driver>kdl :
+	kdl.c
+	;
+
+KernelAddon <driver>test :
+	test.c
+	;
+
+KernelAddon <driver>tun_driver :
+	driver.cpp
 	;
