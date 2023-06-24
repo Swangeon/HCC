@@ -8,7 +8,6 @@
 #include <OS.h>
 
 #include "BufferQueue.h"
-
 #include <net_buffer.h>
 
 #include <fcntl.h>
@@ -32,8 +31,6 @@ const char * device_names[] = {"misc/" TUN_MODULE_NAME, NULL};
 
 int32 api_version = B_CUR_DRIVER_API_VERSION;
 
-struct net_buffer_module_info* gBufferModule;
-
 
 status_t tun_open(const char *name, uint32 flags, void **cookie);
 status_t tun_close(void *cookie);
@@ -46,89 +43,78 @@ status_t tun_writev(void *cookie, off_t position, const iovec *vec, size_t count
 
 
 device_hooks tun_hooks = {
-	(device_open_hook)tun_open,
-	(device_close_hook) tun_close,
-	(device_free_hook)tun_free,
-	(device_control_hook)tun_ioctl,
-	(device_read_hook)tun_read,
-	(device_write_hook)tun_write,
-	NULL,
-	NULL,
-	(device_readv_hook)tun_readv,
-	(device_writev_hook)tun_writev
+        tun_open,
+        tun_close,
+        tun_free,
+        tun_ioctl,
+        tun_read,
+        tun_write,
+        NULL,
+        NULL,
+        tun_readv,
+        tun_writev
 };
 
 
-typedef struct bytequeue : queue {
-	uint8 *element;
-} bytequeue;
+//typedef struct bytequeue : queue {
+//    uint8 *element;
+//} bytequeue;
 
+BufferQueue appQ(3000);
+BufferQueue interfaceQ(3000);
 
 status_t
 init_hardware(void)
 {
-	/* No Hardware */
-	return B_OK;
+    /* No Hardware */
+    return B_OK;
 }
 
 
 status_t
 init_driver(void)
 {
-	dprintf("tun:init_driver()\n");
-	return B_OK;
+    /* Init driver */
+    dprintf("tun:init_driver() at /dev/misc\n");
+    size_t appAvail = appQ.Available();
+    size_t interfaceAvail = interfaceQ.Available();
+    dprintf("%li bytes available in appQ\n", appAvail);
+    dprintf("%li bytes available in interfaceQ\n", interfaceAvail);
+    return B_OK;
 }
 
 
 void
 uninit_driver(void)
 {
-	dprintf("tun:uninit_driver()\n");
+    dprintf("tun:uninit_driver()\n");
 }
 
-/* New Code
+
 status_t
 tun_open(const char *name, uint32 flags, void **cookie)
 {
-	/* Make interface here /
-	dprintf("tun:open_driver with name %s \n", name);
-	bytequeue *appQueue = NULL;
-	status_t status = queue_init(appQueue);
-	if (status != B_OK) {
-		dprintf("bytequeue failed init\n");
-		return B_ERROR;
-	}
-	dprintf("bytequeue initialized\n");
-	*cookie = NULL;
-	// user_memcpy(*cookie, name, 7);
-	return B_OK;
-}
-*/
-// Old code
-status_t 
-tun_open(const char *name, uint32 flags, void **cookie)
-{
-	/* Make interface here */
-	dprintf("tun:open_driver with name %s \n", name);
-	*cookie = NULL;
-	return B_OK;
+    /* Make interface here */
+    dprintf("tun:open_driver with name %s and flags\n", name);
+    *cookie = NULL;
+    return B_OK;
 }
 
 
 status_t
 tun_close(void *cookie)
 {
-	/* Close interface here */
-	dprintf("tun:close_driver()\n");
-	// (void)cookie;
-	return B_OK;
+    /* Close interface here */
+    dprintf("tun:close_driver()\n");
+    // (void)cookie;
+    return B_OK;
 }
 
 
 status_t
 tun_free(void *cookie)
 {
-	return B_OK;
+    return B_OK;
 }
 
 
@@ -182,51 +168,111 @@ tun_ioctl(void *cookie, uint32 op, void *data, size_t len)
 
 // 	}
 // 	return B_ERROR;
-	return B_OK;
+    return B_OK;
 }
 
 
 status_t
 tun_read(void *cookie, off_t position, void *data, size_t *numbytes)
 {
-	/* Read data from driver */
-	dprintf("TUN: Reading %li bytes of data\n", *numbytes);
-	return B_OK;
+    /* Read data from driver 
+    TODO:
+        1. If cookie is null, read from appQ else read from interfaceQ
+    */
+    net_buffer* buffer = NULL;
+    dprintf("TUN: Reading %li bytes of data\n", *numbytes);
+    if (strcmp((char*)cookie, "tun") == 0) {
+        status_t status = interfaceQ.Get(*numbytes, true, &buffer);
+        if (status == B_OK) {
+            // Set data = to net_buffer
+		    ASSERT(buffer->size == *numbytes);
+		    gBufferModule->free(buffer);
+	    } else
+		    dprintf("getting %lu bytes failed: %s\n", *numbytes, strerror(status));
+    } else {
+        status_t status = appQ.Get(*numbytes, true, &buffer);
+	    if (status == B_OK) {
+            // set data = to the uint8 byte stream
+		    ASSERT(buffer->size == *numbytes);
+		    gBufferModule->free(buffer);
+	    } else
+		    dprintf("getting %lu bytes failed: %s\n", *numbytes, strerror(status));
+    }
+    return B_OK;
+}
+
+
+net_buffer*
+create_buffer(const void *data, size_t *numbytes)
+{
+    net_buffer* buffer = gBufferModule->create(256);
+	if (buffer == NULL) {
+		dprintf("creating a buffer failed!\n");
+		return NULL;
+	}
+
+	status_t status = gBufferModule->append(buffer, data, *numbytes);
+	if (status != B_OK) {
+		dprintf("appending %lu bytes to buffer %p failed: %s\n", *numbytes, buffer,
+			strerror(status));
+		gBufferModule->free(buffer);
+		return NULL;
+	}
+	
+	return buffer;
 }
 
 
 status_t
 tun_write(void *cookie, off_t position, const void *data, size_t *numbytes)
 {
-	/* Write data to driver */
-	dprintf("tun:write_driver(): writting %li bytes\n", *numbytes);
-	return B_OK;
+    /* Write data to driver 
+    TODO:                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+        1. When tun interface opens we need to do a write that will set the cookie for the interface
+        2. Need to contact interface (tun interface) to grab its IP address for later comparisons
+        3. Store IP address or tun interface name in cookie?
+    */
+    dprintf("tun:write_driver(): writting %s with length of %li bytes\n", (char*)data, *numbytes);
+    if (cookie == NULL) {
+        if (strcmp((char*)data, "tun") == 0) {
+            dprintf("Cookie is ready to be set\n");
+            cookie = (void*)"tun";
+        } else {
+            dprintf("Appending to interfaceQ\n");
+            interfaceQ.Add(create_buffer(data, numbytes));
+        }
+    } else {
+        dprintf("Appending to appQ\n");
+        appQ.Add(create_buffer(data, numbytes));
+    }
+    return B_OK;
 }
 
 
 status_t
 tun_readv(void *cookie, off_t position, const iovec *vec, size_t count, size_t *numBytes)
 {
-	return EOPNOTSUPP;
+    return EOPNOTSUPP;
 }
 
 
 status_t
 tun_writev(void *cookie, off_t position, const iovec *vec, size_t count, size_t *numBytes)
 {
-	return EOPNOTSUPP;
+    return EOPNOTSUPP;
 }
 
 
 const char**
 publish_devices()
 {
-	return device_names;
+    return device_names;
 }
 
 
 device_hooks*
 find_device(const char *name)
 {
-	return &tun_hooks;
+    return &tun_hooks;
 }
+
