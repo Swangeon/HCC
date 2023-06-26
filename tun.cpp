@@ -32,12 +32,13 @@ struct tun_device : net_device, DoublyLinkedListLinkImpl<tun_device> {
 		free(read_buffer);
 		free(write_buffer);
 	}
+
 	int		fd;
 	uint32	frame_size;
+
 	void* read_buffer, *write_buffer;
 	mutex read_buffer_lock, write_buffer_lock;
 };
-
 
 struct net_buffer_module_info* gBufferModule;
 static struct net_stack_module_info* sStackModule;
@@ -86,13 +87,12 @@ tun_init(const char* name, net_device** _device)
 
 	device->mtu = 1500;
 	device->media = IFM_ACTIVE | IFM_ETHER;
-	device->header_length = 20;
+	device->header_length = 24;
 	device->fd = -1;
-	device->read_buffer = device->write_buffer = NULL;
 	device->read_buffer_lock = MUTEX_INITIALIZER("tun read_buffer"),
 	device->write_buffer_lock = MUTEX_INITIALIZER("tun write_buffer");
-	*_device = device;
 
+	*_device = device;
 	dprintf("TUN DEVICE CREATED\n");
 	return B_OK;
 }
@@ -118,8 +118,7 @@ tun_up(net_device *_device)
 		dprintf("Module Name %s failed in opening driver\n", device->name);
 		return errno;
 	}
-	write(device->fd, "tun", 4);
-	dprintf("Marked as interface for driver\n");
+	// write(device->fd, "tun", 4);
 	return B_OK;
 }
 
@@ -142,28 +141,72 @@ tun_control(net_device* device, int32 op, void* argument,
 
 
 status_t
-tun_send_data(net_device* device, net_buffer* buffer)
+tun_send_data(net_device* _device, net_buffer* buffer)
 {
-	// dprintf("Sending Packet:  Start: %u | End: %u Src: %s | Dst: %s\n", buffer->fragment.start, buffer->fragment.end, buffer->source->sa_data, buffer->destination->sa_data);
-	// dprintf("Flags: %u | Size: %u | Protocol: %u\n", buffer->flags, buffer->size, buffer->protocol);
-	// dprintf("Seq: %u | Offset: %u | Idx: %u | Type: %i\n", buffer->sequence, buffer->offset, buffer->index, buffer->type);
+	dprintf("TUN SEND DATA\n");
+	tun_device *device = (tun_device *)_device;
+	if (buffer->size > device->mtu)
+		return B_BAD_VALUE;
+	
 	void* data = malloc(buffer->size);
-	gBufferModule->read(buffer, buffer->offset, data, buffer->size);
-	dprintf("Reading Data from %p: ", data);
-	uint8_t* bytePtr = NULL; // = static_cast<uint8_t*>(data);
-	memcpy(bytePtr, data, buffer->size);
-	// for (size_t i = 0; i < buffer->size; i++) {
-    // 	uint8_t byte = *(bytePtr + i);
-	// 	dprintf("%02x", byte);
-	// }
-	dprintf("%02x", *bytePtr);
-	return sStackModule->device_enqueue_buffer(device, buffer);
+	if (data == NULL) {
+		dprintf("Couldn't allocate data buffer");
+		return B_NO_MEMORY;
+	}
+	// dprintf("Allocated data\n");
+	status_t status = gBufferModule->read(buffer, 0, data, buffer->size);
+	if (status != B_OK) {
+		dprintf("Could not read from buffer\n");
+		return status;
+	}
+	// dprintf("Read from net_buffer\n");
+	// need to get data into byte stream
+	uint8_t* offset_data = (uint8_t*)data + 14; // Gets rid of ethernet header
+	ssize_t bytesWritten = write(device->fd, offset_data, buffer->size);
+	// dprintf("Wrote: %ld bytes\n", bytesWritten);
+
+	uint8_t* bytePtr = static_cast<uint8_t*>(offset_data);
+	// memcpy(bytePtr, data, buffer->size);
+	for (size_t i = 0; i < buffer->size; i++) {
+    	uint8_t byte = *(bytePtr + i);
+		dprintf("%02x", byte);
+	}
+	dprintf("\n");
+
+	if (bytesWritten < 0) {
+		device->stats.send.errors++;
+		gBufferModule->free(buffer);
+		return B_ERROR;
+	}
+
+	device->stats.send.packets++;
+	device->stats.send.bytes += bytesWritten;
+
+	gBufferModule->free(buffer);
+	free(data);
+	data = NULL;
+
+	return B_OK;
 }
 
 
 status_t
-tun_receive_data(net_device *_device, net_buffer **_buffer)
+tun_receive_data(net_device* _device, net_buffer* buffer)
 {
+	dprintf("TUN RECV DATA\n");
+	tun_device *device = (tun_device *)_device;
+	ssize_t bytesRead;
+	status_t status;
+	bytesRead = read(device->fd, buffer, device->frame_size);
+	if (bytesRead < 0) {
+		dprintf("Failed reading driver\n");
+		device->stats.receive.errors++;
+		status = errno;
+		return status;
+	}
+	
+	device->stats.receive.bytes += bytesRead;
+	device->stats.receive.packets++;
 	return B_OK;
 }
 
