@@ -55,13 +55,9 @@ device_hooks tun_hooks = {
         tun_writev
 };
 
-
-//typedef struct bytequeue : queue {
-//    uint8 *element;
-//} bytequeue;
-
 BufferQueue appQ(3000);
 BufferQueue interfaceQ(3000);
+
 
 status_t
 init_hardware(void)
@@ -95,8 +91,14 @@ status_t
 tun_open(const char *name, uint32 flags, void **cookie)
 {
     /* Make interface here */
-    dprintf("tun:open_driver with name %s and flags\n", name);
-    *cookie = NULL;
+    dprintf("tun:open_driver with name %s and flags %u\n", name, flags);
+    if (flags == 2) {
+        *cookie = (void*)"tun";
+        dprintf("Marked as interface for driver\n");
+    } else { 
+        *cookie = NULL;
+        dprintf("Marked as application for driver\n");
+    }
     return B_OK;
 }
 
@@ -173,52 +175,87 @@ tun_ioctl(void *cookie, uint32 op, void *data, size_t len)
 
 
 status_t
+get_packet_data(void *data, size_t *numbytes, net_buffer* buffer)
+{
+    struct net_buffer_module_info* gBufferModule;
+    status_t status;
+    status = get_module(NET_BUFFER_MODULE_NAME, (module_info **)&gBufferModule);
+    if (status != B_OK){
+        dprintf("Getting BufferModule failed\n");
+        return status;
+    }
+	ASSERT(buffer->size == *numbytes);
+    // set data = to the uint8* byte stream?
+	status = gBufferModule->read(buffer, 0, data, *numbytes);
+	if (status != B_OK) {
+		dprintf("Failed reading data\n");
+        gBufferModule->free(buffer);
+        put_module(NET_BUFFER_MODULE_NAME);
+        return status;
+    }
+    put_module(NET_BUFFER_MODULE_NAME);
+    return B_OK;
+}
+
+
+status_t
 tun_read(void *cookie, off_t position, void *data, size_t *numbytes)
 {
     /* Read data from driver 
     TODO:
         1. If cookie is null, read from appQ else read from interfaceQ
     */
+    status_t status;
     net_buffer* buffer = NULL;
     dprintf("TUN: Reading %li bytes of data\n", *numbytes);
     if (strcmp((char*)cookie, "tun") == 0) {
-        status_t status = interfaceQ.Get(*numbytes, true, &buffer);
-        if (status == B_OK) {
-            // Set data = to net_buffer
-		    ASSERT(buffer->size == *numbytes);
-		    gBufferModule->free(buffer);
-	    } else
-		    dprintf("getting %lu bytes failed: %s\n", *numbytes, strerror(status));
+        status = interfaceQ.Get(*numbytes, true, &buffer);
+        if (status != B_OK) {
+            dprintf("getting packet failed: %s\n", strerror(status));
+            return status;
+        }
+        // Returns full net_buffer packet to interface instead of data itself
+        data = buffer;
+        return B_OK;
     } else {
-        status_t status = appQ.Get(*numbytes, true, &buffer);
-	    if (status == B_OK) {
-            // set data = to the uint8 byte stream
-		    ASSERT(buffer->size == *numbytes);
-		    gBufferModule->free(buffer);
-	    } else
-		    dprintf("getting %lu bytes failed: %s\n", *numbytes, strerror(status));
+        status = appQ.Get(*numbytes, true, &buffer);
+        if (status != B_OK) {
+            dprintf("getting packet failed: %s\n", strerror(status));
+            return status;
+        }
+        status = get_packet_data(data, numbytes, buffer);
+        if (status != B_OK) {
+            dprintf("getting %lu bytes failed: %s\n", *numbytes, strerror(status));
+            return status;
+        }
     }
     return B_OK;
 }
 
 
-net_buffer*
+static net_buffer*
 create_buffer(const void *data, size_t *numbytes)
 {
+    // This first part kernel panics the system I believe it is specifically gBufferModule->create
+    struct net_buffer_module_info* gBufferModule;
+    status_t status = get_module(NET_BUFFER_MODULE_NAME, (module_info **)&gBufferModule);
+	if (status < B_OK) {
+		dprintf("Get Mod Failed: %s\n", strerror(status));
+		return NULL;
+	}
     net_buffer* buffer = gBufferModule->create(256);
 	if (buffer == NULL) {
 		dprintf("creating a buffer failed!\n");
 		return NULL;
 	}
-
-	status_t status = gBufferModule->append(buffer, data, *numbytes);
+    status = gBufferModule->append(buffer, data, *numbytes);
 	if (status != B_OK) {
 		dprintf("appending %lu bytes to buffer %p failed: %s\n", *numbytes, buffer,
 			strerror(status));
 		gBufferModule->free(buffer);
 		return NULL;
 	}
-	
+	put_module(NET_BUFFER_MODULE_NAME);
 	return buffer;
 }
 
@@ -232,17 +269,17 @@ tun_write(void *cookie, off_t position, const void *data, size_t *numbytes)
         2. Need to contact interface (tun interface) to grab its IP address for later comparisons
         3. Store IP address or tun interface name in cookie?
     */
-    dprintf("tun:write_driver(): writting %s with length of %li bytes\n", (char*)data, *numbytes);
-    if (cookie == NULL) {
+    dprintf("tun:write_driver: writting %s with length of %li bytes\n", (char*)data, *numbytes);
+    if (!cookie) {
         if (strcmp((char*)data, "tun") == 0) {
-            dprintf("Cookie is ready to be set\n");
             cookie = (void*)"tun";
+            dprintf("Cookie set to %s\n", (char*)cookie);
         } else {
             dprintf("Appending to interfaceQ\n");
             interfaceQ.Add(create_buffer(data, numbytes));
         }
     } else {
-        dprintf("Appending to appQ\n");
+        dprintf("%s appending to appQ\n", (char*)cookie);
         appQ.Add(create_buffer(data, numbytes));
     }
     return B_OK;
