@@ -6,9 +6,12 @@ with open("/dev/net/tun_driver", "rb+") as file:
     file.read()
   except OSError:
     print("Reading...")
-    data = file.read(84) # Standard length
+    data = file.read(1500) # MTU
     print(f"Read Data -> {data}\nResponding...")
     reply = ip.IP(data)
     reply.higher_layer.type = icmp.ICMP_ECHO_REPLY
-    print("%s" % reply)
+    # print("%s" % reply)
+    print("Writing...")
+    file.write(reply)
+    print("Done")
     
