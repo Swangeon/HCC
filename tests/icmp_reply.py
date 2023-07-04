@@ -1,7 +1,7 @@
 from pypacker.layer3 import ip
 from pypacker.layer3 import icmp
 
-with open("/dev/net/tun_driver", "rb+") as file:
+with open("/dev/misc/tun_driver", "rb+") as file:
   try:
     file.read()
   except OSError:
