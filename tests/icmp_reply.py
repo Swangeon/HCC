@@ -12,6 +12,6 @@ with open("/dev/misc/tun_driver", "rb+") as file:
     reply.higher_layer.type = icmp.ICMP_ECHO_REPLY
     # print("%s" % reply)
     print("Writing...")
-    file.write(reply)
+    file.write(reply.bin())
     print("Done")
     
