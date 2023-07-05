@@ -9,12 +9,14 @@ with open("/dev/misc/tun_driver", "rb+") as file:
     print("Reading...")
     data = file.read(84)
     print(f"Read Data -> {data}\nResponding...")
-    reply = ethernet.Ethernet(src_s="00:00:00:00:00:00", dst_s="00:00:00:00:00:00")
+    #reply = ethernet.Ethernet(src_s="00:00:00:00:00:00", dst_s="00:00:00:00:00:00")
     temp = ip.IP(data)
     temp.higher_layer.type = icmp.ICMP_ECHO_REPLY
-    reply += temp
-    print("%s" % reply)
+    #reply += temp
+    #print("%s" % reply)
+    print("%s" % temp)
     print("Writing...")
-    file.write(reply.bin())
+    #file.write(reply.bin())
+    file.write(temp.bin())
     print("Done")
     
