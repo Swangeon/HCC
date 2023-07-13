@@ -24,9 +24,11 @@
 
 
 #define TUN_DRIVER_NAME "misc/tun_driver"
+#define TUN_DRIVER_NAME "misc/tun_driver"
 
 #define NET_TUN_MODULE_NAME "network/devices/tun/v1"
 
+const char * device_names[] = {TUN_DRIVER_NAME, "misc/tun_interface", NULL};
 const char * device_names[] = {TUN_DRIVER_NAME, "misc/tun_interface", NULL};
 
 int32 api_version = B_CUR_DRIVER_API_VERSION;
@@ -57,8 +59,10 @@ device_hooks tun_hooks = {
 
 BufferQueue appQ(3000); // 3000 for now
 BufferQueue interfaceQ(3000); // 3000 for now
-sem_id readSem;
-sem_id writeSem;
+queue appQQ;
+queue interfaceQQ;
+sem_id intSem;
+sem_id appSem;
 struct net_buffer_module_info* netBufferModule;
 
 status_t
@@ -79,6 +83,8 @@ init_driver(void)
         dprintf("Getting BufferModule failed\n");
         return status;
     }
+    queue_init(&appQQ);
+    queue_init(&interfaceQQ);
     return B_OK;
 }
 
@@ -95,21 +101,21 @@ tun_open(const char *name, uint32 flags, void **cookie)
 {
     /* Make interface here */
     dprintf("tun:open_driver with name %s and flags %u\n", name, flags);
-    if (flags == 2) { // 2 is the flag that gets passed by a tun interface
+    if (strncmp(name, "misc/tun_interface", 19) == 0) { // 2 is the flag that gets passed by a tun interface
         *cookie = (void*)"tun";
         dprintf("Marked as interface for driver\n");
+        if ((intSem = create_sem(1, "tun_notify_int")) < B_NO_ERROR) {
+            put_module(NET_BUFFER_MODULE_NAME);
+            return B_ERROR;
+        }
     } else { 
         *cookie = (void*)"app";
         dprintf("Marked as application for driver\n");
-    }
-    if ((readSem = create_sem(1, "tun_notify_read")) < B_NO_ERROR) {
-        put_module(NET_BUFFER_MODULE_NAME);
-        return B_ERROR;
-    }
-    if ((writeSem = create_sem(1, "tun_notify_write")) < B_NO_ERROR) {
-        put_module(NET_BUFFER_MODULE_NAME);
-        return B_ERROR;
-    }
+        if ((appSem = create_sem(1, "tun_notify_app")) < B_NO_ERROR) {
+            put_module(NET_BUFFER_MODULE_NAME);
+            return B_ERROR;
+        }
+    } 
     return B_OK;
 }
 
@@ -188,25 +194,14 @@ tun_ioctl(void *cookie, uint32 op, void *data, size_t len)
 status_t
 get_packet_data(void *data, size_t *numbytes, net_buffer* buffer)
 {
-    // struct net_buffer_module_info* netBufferModule;
-    // status_t status;
-    // status = get_module(NET_BUFFER_MODULE_NAME, (module_info **)&netBufferModule);
-    // if (status != B_OK){
-    //     dprintf("Getting BufferModule failed\n");
-    //     return status;
-    // }
-	// if (buffer->size == *numbytes) {
-    //     return B_ERROR;
-    // }
-    // // set data = to the uint8* byte stream?
-	// status = netBufferModule->read(buffer, 0, data, *numbytes);
-	// if (status != B_OK) {
-	// 	dprintf("Failed reading data\n");
-    //     netBufferModule->free(buffer);
-    //     put_module(NET_BUFFER_MODULE_NAME);
-    //     return status;
-    // }
-    // put_module(NET_BUFFER_MODULE_NAME);
+    status_t status;
+    // set data to the uint8* byte stream?
+	status = netBufferModule->read(buffer, 0, data, *numbytes);
+	if (status != B_OK) {
+		dprintf("Failed reading data\n");
+        netBufferModule->free(buffer);
+        return status;
+    }
     return B_OK;
 }
 
@@ -215,39 +210,69 @@ status_t
 tun_read(void *cookie, off_t position, void *data, size_t *numbytes)
 {
     // Read data from driver 
-    dprintf("%li bytes available in appQ\n", appQ.Used());
-    dprintf("%li bytes available in interfaceQ\n", interfaceQ.Used());
     status_t status;
     net_buffer* buffer;
-    if ((appQ.Used() == 0) || (interfaceQ.Used() == 0)){
-        dprintf("Acquiring Semaphore\n");
-        status = acquire_sem_etc(readSem, 1, B_CAN_INTERRUPT, 0);
+    if (strncmp((char*)cookie, "tun", 3) == 0) {
+        dprintf("Acquiring Interface Semaphore\n");
+        status = acquire_sem_etc(intSem, 1, B_CAN_INTERRUPT, 0);
+        if (status < B_OK) {
+            *numbytes = 0;
+            return status;
+        }
+    } else {
+        dprintf("Acquiring Application Semaphore\n");
+        status = acquire_sem_etc(appSem, 1, B_CAN_INTERRUPT, 0);
         if (status < B_OK) {
             *numbytes = 0;
             return status;
         }
     }
-    // dprintf("TUN: Reading %li bytes of data\n", *numbytes);
-    if ((strcmp((char*)cookie, "app") == 0)) {
+    dprintf("TUN: Reading %li bytes of data\n", *numbytes);
+    if ((strcmp((char*)cookie, "app") == 0) && (appQ.Used() != 0)) {
         dprintf("TUN: APP Reading %li bytes of data\n", *numbytes);
+        // dprintf("%li bytes available in appQ\n", appQ.Used());
         status = appQ.Get(*numbytes, true, &buffer);
         if (status != B_OK) {
             dprintf("getting packet failed: %s\n", strerror(status));
             return status;
         }
-        data = (void*)appQ.Used();
-        *numbytes = sizeof(size_t);
+        *numbytes = buffer->size;
+        void* temp = malloc(*numbytes);
+        if (temp == NULL) {
+            dprintf("Malloc failed, not enough memory\n");
+            return B_ERROR;
+        }
+        if (get_packet_data(temp, numbytes, buffer) != B_OK) {
+            dprintf("Could not get byte stream\n");
+            return B_ERROR;
+        }
+        memcpy(data, temp, *numbytes);
+        free(temp);
+        temp = NULL;
     } else if ((strcmp((char*)cookie, "tun") == 0) && (interfaceQ.Used() != 0)) {
         dprintf("TUN: INTERFACE Reading %li bytes of data\n", *numbytes);
+        // dprintf("%li bytes available in interfaceQ\n", interfaceQ.Used());
         status = interfaceQ.Get(*numbytes, true, &buffer);
         if (status != B_OK) {
             dprintf("getting packet failed: %s\n", strerror(status));
             return status;
         }
-        data = (void*)interfaceQ.Used();
-        *numbytes = sizeof(size_t);
+        *numbytes = buffer->size;
+        void* temp = malloc(*numbytes);
+        if (temp == NULL) {
+            dprintf("Malloc failed, not enough memory\n");
+            return B_ERROR;
+        }
+        if (get_packet_data(temp, numbytes, buffer) != B_OK) {
+            dprintf("Could not get byte stream\n");
+            return B_ERROR;
+        }
+        memcpy(data, temp, *numbytes);
+        free(temp);
+        temp = NULL;
     } else {
         dprintf("No Data\n");
+        data = NULL;
         return B_ERROR;
     }
     return B_OK;
@@ -280,14 +305,14 @@ tun_write(void *cookie, off_t position, const void *data, size_t *numbytes)
 {
     // Write data to driver 
     dprintf("tun:write_driver: writting %s with length of %li bytes\n", (char*)data, *numbytes);
-    if (!cookie && interfaceQ.Used() != 3000) {
+    if ((strcmp((char*)cookie, "app") == 0) && (interfaceQ.Used() < 3000)) {
         dprintf("Appending to interfaceQ\n");
         interfaceQ.Add(create_filled_buffer((uint8 *)data, *numbytes));
-    } else if (appQ.Used() != 3000) {
+        release_sem(intSem);
+    } else if ((strcmp((char*)cookie, "tun") == 0) && (appQ.Used() < 3000)) {
         dprintf("%s appending to appQ\n", (char*)cookie);
         appQ.Add(create_filled_buffer((uint8 *)data, *numbytes));
-        // interfaceQ.Add(create_filled_buffer((uint8 *)data, *numbytes)); // For testing
-        // dprintf("Data at %p of size %lu\n", data, *numbytes);
+        release_sem(appSem);
     } else { 
         return B_ERROR;
     }
