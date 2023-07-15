@@ -15,20 +15,18 @@
 #include <net/if.h>
 #include <net/if_types.h>
 #include <net/if_media.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/param.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <util/queue.h>
 
 
-#define TUN_DRIVER_NAME "misc/tun_driver"
 #define TUN_DRIVER_NAME "misc/tun_driver"
 
 #define NET_TUN_MODULE_NAME "network/devices/tun/v1"
 
-const char * device_names[] = {TUN_DRIVER_NAME, "misc/tun_interface", NULL};
 const char * device_names[] = {TUN_DRIVER_NAME, "misc/tun_interface", NULL};
 
 int32 api_version = B_CUR_DRIVER_API_VERSION;
@@ -59,11 +57,9 @@ device_hooks tun_hooks = {
 
 BufferQueue appQ(3000); // 3000 for now
 BufferQueue interfaceQ(3000); // 3000 for now
-queue appQQ;
-queue interfaceQQ;
 sem_id intSem;
 sem_id appSem;
-struct net_buffer_module_info* netBufferModule;
+struct net_buffer_module_info* gBufferModule;
 
 status_t
 init_hardware(void)
@@ -78,13 +74,11 @@ init_driver(void)
 {
     /* Init driver */
     dprintf("tun:init_driver() at /dev/misc\n");
-    status_t status = get_module(NET_BUFFER_MODULE_NAME, (module_info **)&netBufferModule);
+    status_t status = get_module(NET_BUFFER_MODULE_NAME, (module_info **)&gBufferModule);
     if (status != B_OK){
         dprintf("Getting BufferModule failed\n");
         return status;
     }
-    queue_init(&appQQ);
-    queue_init(&interfaceQQ);
     return B_OK;
 }
 
@@ -196,10 +190,10 @@ get_packet_data(void *data, size_t *numbytes, net_buffer* buffer)
 {
     status_t status;
     // set data to the uint8* byte stream?
-	status = netBufferModule->read(buffer, 0, data, *numbytes);
+	status = gBufferModule->read(buffer, 0, data, *numbytes);
 	if (status != B_OK) {
 		dprintf("Failed reading data\n");
-        netBufferModule->free(buffer);
+        gBufferModule->free(buffer);
         return status;
     }
     return B_OK;
@@ -282,17 +276,17 @@ tun_read(void *cookie, off_t position, void *data, size_t *numbytes)
 net_buffer*
 create_filled_buffer(uint8* data, size_t bytes)
 {
-	net_buffer* buffer = netBufferModule->create(256);
+	net_buffer* buffer = gBufferModule->create(256);
 	if (buffer == NULL) {
 		dprintf("creating a buffer failed!\n");
 		return NULL;
 	}
 
-	status_t status = netBufferModule->append(buffer, data, bytes);
+	status_t status = gBufferModule->append(buffer, data, bytes);
 	if (status != B_OK) {
 		dprintf("appending %lu bytes to buffer %p failed: %s\n", bytes, buffer,
 			strerror(status));
-		netBufferModule->free(buffer);
+		gBufferModule->free(buffer);
 		return NULL;
 	}
 	
@@ -316,7 +310,6 @@ tun_write(void *cookie, off_t position, const void *data, size_t *numbytes)
     } else { 
         return B_ERROR;
     }
-    release_sem(readSem);
     return B_OK;
 }
 
