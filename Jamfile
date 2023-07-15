@@ -1,5 +1,6 @@
 SubDir HAIKU_TOP src add-ons kernel drivers network tun ;
 
+SubDirHdrs [ FDirName $(HAIKU_TOP) src add-ons kernel network protocols tcp ] ;
 UsePrivateHeaders drivers ;
 UsePrivateKernelHeaders ;
 UsePrivateSystemHeaders ;
@@ -8,10 +9,5 @@ UsePrivateHeaders net ;
 
 
 KernelAddon tun_driver :
-	tcp.cpp
-    TCPEndpoint.cpp
-    BufferQueue.cpp
-    EndpointManager.cpp
 	driver.cpp
 	;
-
