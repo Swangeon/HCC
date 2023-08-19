@@ -77,7 +77,7 @@ typedef struct tun_struct {
     ConditionVariable*          readWait;
     ConditionVariable*          writeWait;
     mutex                       readLock;
-    union {
+    union { // This will change later
         struct {
             select_sync_pool*   select_pool;
             bool                readable;
