@@ -1,3 +1,25 @@
+#include <Select.h>
+#include <fs/select_sync_pool.h>
+
+
+typedef struct tun_struct {
+	uint32_t                    name[3];
+	unsigned long               flags;
+	BufferQueue*                sendQueue;
+	BufferQueue*                recvQueue;
+	ConditionVariable*          readWait;
+	mutex                       readLock;
+	union {
+		struct {
+			select_sync_pool*   select_pool;
+			mutex               selectLock;
+			bool                readable;
+			bool                writable;
+		}                       app;
+	};
+} tun_struct;
+
+
 static void
 tun_notify(tun_struct* tun)
 {
