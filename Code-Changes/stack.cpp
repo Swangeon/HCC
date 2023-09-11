@@ -1,4 +1,4 @@
-=/*
+/*
  * Copyright 2006-2010, Haiku, Inc. All Rights Reserved.
  * Distributed under the terms of the MIT License.
  *
@@ -227,7 +227,7 @@ family::Add(int type)
 }
 
 
-//	#pragma mark -#include <stdio.h>
+//	#pragma mark -
 
 
 chain::chain(int _family, int _type, int _protocol)
@@ -662,7 +662,6 @@ register_domain_protocols(int family, int type, int protocol, ...)
 
 	MutexLocker locker(&sChainLock);
 
-	dprintf("Creating Chain\n");
 	struct chain* chain = chain::Lookup(sProtocolChains, family, type, protocol);
 	if (chain != NULL)
 		return B_OK;
@@ -670,9 +669,7 @@ register_domain_protocols(int family, int type, int protocol, ...)
 	va_list modules;
 	va_start(modules, protocol);
 
-	dprintf("Adding Interface\n");
 	chain = chain::Add(sProtocolChains, family, type, protocol, modules);
-	dprintf("End Adding Interface\n");
 
 	va_end(modules);
 
@@ -834,12 +831,8 @@ init_stack()
 	scan_modules("network/datalink_protocols");
 
 	// TODO: for now!
-	// Testing TUN Driver with loopback datalink frame
-	// register_domain_protocols(AF_INET, IFT_TUN,
-	// 	2048, "network/devices/tun/v1");
-	// ^^^ Doesn't work ^^^
 	register_domain_datalink_protocols(AF_INET, IFT_TUN,
-	"network/datalink_protocols/loopback_frame/v1", NULL);
+		"network/datalink_protocols/ethernet_frame/v1", NULL);
 	register_domain_datalink_protocols(AF_INET, IFT_LOOP,
 		"network/datalink_protocols/loopback_frame/v1", NULL);
 #if 0 // PPP is not (currently) included in the build

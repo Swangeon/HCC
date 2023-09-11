@@ -1,5 +1,10 @@
- /* Authors:
+/*
+ * Copyright 2023 Haiku, Inc. All rights reserved.
+ * Distributed under the terms of the MIT License.
+ *
+ * Authors:
  *		Axel Dörfler, axeld@pinc-software.de
+ *		Sean Brady, swangeon@gmail.com
  */
 
 #include <ethernet.h>
@@ -10,70 +15,107 @@
 #include <net_tun.h>
 
 #include <ByteOrder.h>
+#include <Drivers.h>
 #include <lock.h>
 #include <util/AutoLock.h>
 #include <util/DoublyLinkedList.h>
 #include <KernelExport.h>
 #include <NetBufferUtilities.h>
 
+#include <debug.h>
+#include <errno.h>
 #include <net/if.h>
-#include <net/if_types.h>
 #include <net/if_media.h>
+#include <net/if_tun.h>
+#include <net/if_types.h>
 #include <new>
 #include <stdlib.h>
 #include <string.h>
-// To get rid of after testing
-#include <debug.h>
-#include <errno.h>
-#include <stdio.h>
-#include <sys/sockio.h>
 #include <unistd.h>
+#include <util/Random.h>
 
 
-struct tun_device : net_device, DoublyLinkedListLinkImpl<tun_device> {
+struct tun_device : net_device, DoublyLinkedListLinkImpl<tun_device>
+{
 	~tun_device()
 	{
 		free(read_buffer);
 		free(write_buffer);
 	}
 
+	int fd;
+	uint32 frame_size;
 
-	int		fd;
-	uint32	frame_size;
-
-
-	void* read_buffer, *write_buffer;
+	void *read_buffer, *write_buffer;
 	mutex read_buffer_lock, write_buffer_lock;
 };
 
 struct net_buffer_module_info* gBufferModule;
 static struct net_stack_module_info* sStackModule;
 
-//static mutex sListLock;
-//static DoublyLinkedList<ethernet_device> sCheckList;
 
 //	#pragma mark -
 
 
+/**
+ * @brief Prepends an ethernet frame to the given net buffer packet.
+ *
+ * @param buffer pointer to the net buffer to prepend the ethernet frame to
+ *
+ * @return the status of the operation
+ */
+static status_t
+prepend_ethernet_frame(net_buffer* buffer)
+{
+	NetBufferPrepend<ether_header> bufferHeader(buffer);
+	if (bufferHeader.Status() != B_OK)
+		return bufferHeader.Status();
+	ether_header &header = bufferHeader.Data();
+	header.type = B_HOST_TO_BENDIAN_INT16(ETHER_TYPE_IP);
+	memset(header.source, 0, ETHER_ADDRESS_LENGTH);
+	memset(header.destination, 0, ETHER_ADDRESS_LENGTH);
+	bufferHeader.Sync();
+	return B_OK;
+}
+
+
+/**
+ * @brief Removes the ethernet header from the given network buffer.
+ *
+ * @param buffer Pointer to the network buffer.
+ *
+ * @return The status of the operation.
+ */
+static status_t
+ethernet_header_deframe(net_buffer* buffer)
+{
+	NetBufferHeaderRemover<ether_header> bufferHeader(buffer);
+	if (bufferHeader.Status() != B_OK)
+		return bufferHeader.Status();
+
+	return B_OK;
+}
+
+
+/**
+ * @brief Initializes a TUN/TAP interface with the given name.
+ *
+ * @param name The name of the TUN/TAP interface.
+ * @param _device A pointer to a net_device pointer for the newly created interface.
+ *
+ * @return The status of the initialization. Returns B_OK if successful, or an error code otherwise.
+ */
 status_t
 tun_init(const char* name, net_device** _device)
 {
 	if (strncmp(name, "tun", 3)
 		&& strncmp(name, "tap", 3)
-		&& strncmp(name, "dns", 3))	/* iodine uses that */
+		&& strncmp(name, "dns", 3)) /* iodine uses that */
 		return B_BAD_VALUE;
 
-	status_t status = get_module(NET_BUFFER_MODULE_NAME, (module_info **)&gBufferModule);
-	if (status < B_OK) {
-		dprintf("Get Mod Failed\n");
-		return status;
-	}
-
-	tun_device *device = new (std::nothrow) tun_device;
-	if (device == NULL) {
-		put_module(NET_BUFFER_MODULE_NAME);
+	tun_device* device = new (std::nothrow) tun_device;
+	if (device == NULL)
 		return B_NO_MEMORY;
-	}
 
 	memset(device, 0, sizeof(tun_device));
 	strcpy(device->name, name);
@@ -84,53 +126,79 @@ tun_init(const char* name, net_device** _device)
 	} else if (strncmp(name, "tap", 3) == 0) {
 		device->flags = IFF_BROADCAST | IFF_ALLMULTI | IFF_LINK;
 		device->type = IFT_ETHER;
-	} else {
+		/* Set the first two bits to prevent it from becoming a multicast address */
+		device->address.data[0] = 0x00;
+		device->address.data[1] = 0xFF;
+		for (int i = 2; i < ETHER_ADDRESS_LENGTH; i++) {
+			int val = random_value();
+			device->address.data[i] = val * 0x11;
+		}
+		device->address.length = ETHER_ADDRESS_LENGTH;
+	} else
 		return B_BAD_VALUE;
-	}
 
 	device->mtu = 1500;
 	device->media = IFM_ACTIVE | IFM_ETHER;
+	device->frame_size = ETHER_MAX_FRAME_SIZE;
 	device->header_length = ETHER_HEADER_LENGTH;
 	device->fd = -1;
-	device->read_buffer_lock = MUTEX_INITIALIZER("tun read_buffer"),
-	device->write_buffer_lock = MUTEX_INITIALIZER("tun write_buffer");
+	mutex_init(&device->read_buffer_lock, "tun read_buffer");
+	mutex_init(&device->write_buffer_lock, "tun write_buffer");
 
 	*_device = device;
-	dprintf("TUN DEVICE CREATED\n");
 	return B_OK;
 }
 
 
+/**
+ * @brief Uninitializes a TUN/TAP interface.
+ *
+ * @param _device the net_device to uninitialize
+ *
+ * @return the status of the uninitialization process
+ */
 status_t
 tun_uninit(net_device* _device)
 {
 	tun_device* device = (tun_device*)_device;
-	put_module(NET_STACK_MODULE_NAME);
-	put_module(NET_BUFFER_MODULE_NAME);
+	close(device->fd);
+	device->fd = -1;
+	mutex_destroy(&device->read_buffer_lock);
+	mutex_destroy(&device->write_buffer_lock);
 	delete device;
 	return B_OK;
 }
 
 
+/**
+ * @brief Sets up the TUN/TAP network interface to be used.
+ *
+ * @param _device the network device to set up
+ *
+ * @return the status of the setup process
+ */
 status_t
-tun_up(net_device *_device)
+tun_up(net_device* _device)
 {
-	tun_device *device = (tun_device *)_device;
-	dprintf("Opening tun_interface\n");
-	device->fd = open("/dev/misc/tun_interface", O_RDWR);
-	if (device->fd < 0) {
-		dprintf("Module Name %s failed in opening driver\n", device->name);
+	tun_device* device = (tun_device*)_device;
+	device->fd = open("/dev/tap/0", O_RDWR);
+	if (device->fd < 0)
 		return errno;
-	}
-	device->frame_size = ETHER_MAX_FRAME_SIZE;
+	ioctl(device->fd, TUNSETIFF);
 	return B_OK;
 }
 
 
-void
-tun_down(net_device *_device)
+/**
+ * @brief Closes the TUN/TAP network interface to not be used.
+ *
+ * @param _device A pointer to the net_device structure representing the tun_device.
+ *
+ * @return void
+ */
+void tun_down(net_device* _device)
 {
-	tun_device *device = (tun_device *)_device;
+	tun_device* device = (tun_device*)_device;
 	close(device->fd);
 	device->fd = -1;
 }
@@ -138,50 +206,47 @@ tun_down(net_device *_device)
 
 status_t
 tun_control(net_device* device, int32 op, void* argument,
-	size_t length)
+			size_t length)
 {
 	return B_BAD_VALUE;
 }
 
 
-status_t
-ethernet_header_deframe(net_buffer* buffer)
-{
-	// there is not that much to do...
-	NetBufferHeaderRemover<ether_header> bufferHeader(buffer);
-	if (bufferHeader.Status() != B_OK)
-		return bufferHeader.Status();
-
-	return B_OK;
-}
-
-
+/**
+ * @brief Writes data to the TUN/TAP network driver.
+ *
+ * @param _device the network device to get data from network stack
+ * @param buffer the buffer containing the data to write
+ *
+ * @return the status of the operation
+ *
+ * @throws ErrorType if an error occurs during the operation
+ */
 status_t
 tun_send_data(net_device* _device, net_buffer* buffer)
 {
-	dprintf("TUN SEND DATA\n");
-	tun_device *device = (tun_device *)_device;
+	tun_device* device = (tun_device*)_device;
+	status_t status;
 
-	dprintf("|Protocol: %u | Size: %u | Flags: %u|\n", buffer->protocol, buffer->size, buffer->flags);
-
-	if (ethernet_header_deframe(buffer) != B_OK) {
-		return B_ERROR;
+	if (strncmp(device->name, "tun", 3) == 0) {
+		status = ethernet_header_deframe(buffer);
+		if (status != B_OK)
+			return B_ERROR;
 	}
 
 	if (buffer->size > device->mtu)
 		return B_BAD_VALUE;
-	
-	net_buffer *allocated = NULL;
-	net_buffer *original = buffer;
+
+	net_buffer* allocated = NULL;
+	net_buffer* original = buffer;
 
 	MutexLocker bufferLocker;
 	struct iovec iovec;
-	// dprintf("Assigning iovecs\n");
 	if (gBufferModule->count_iovecs(buffer) > 1) {
 		if (device->write_buffer != NULL) {
 			bufferLocker.SetTo(device->write_buffer_lock, false);
 			status_t status = gBufferModule->read(buffer, 0,
-				device->write_buffer, buffer->size);
+								device->write_buffer, buffer->size);
 			if (status != B_OK)
 				return status;
 			iovec.iov_base = device->write_buffer;
@@ -208,14 +273,12 @@ tun_send_data(net_device* _device, net_buffer* buffer)
 	}
 
 	ssize_t bytesWritten = write(device->fd, iovec.iov_base, iovec.iov_len);
-
 	if (bytesWritten < 0) {
 		device->stats.send.errors++;
 		if (allocated)
 			gBufferModule->free(allocated);
 		return errno;
 	}
-	dprintf("Wrote %ld bytes to driver\n", bytesWritten);
 
 	device->stats.send.packets++;
 	device->stats.send.bytes += bytesWritten;
@@ -228,41 +291,26 @@ tun_send_data(net_device* _device, net_buffer* buffer)
 }
 
 
-status_t
-prepend_ethernet_frame(net_buffer *buffer)
-{
-	dprintf("Make ETH Header\n");
-	NetBufferPrepend<ether_header> bufferHeader(buffer);
-	if (bufferHeader.Status() != B_OK) {
-		dprintf("Failed Making ETH Header\n");
-		return bufferHeader.Status();
-	}
-	dprintf("Getting ETH Header Data\n");
-	ether_header &header = bufferHeader.Data();
-	dprintf("Getting ETH Header Family\n");
-
-	dprintf("Set IPv4 for ETH Header\n");
-	header.type = B_HOST_TO_BENDIAN_INT16(ETHER_TYPE_IP);
-
-	dprintf("Getting ETH Header Src & Dst\n");
-	memset(header.source, 0, ETHER_ADDRESS_LENGTH);
-	memset(header.destination, 0, ETHER_ADDRESS_LENGTH);
-	dprintf("Getting ETH Sync\n");
-	bufferHeader.Sync();
-	return B_OK;
-}
-
-
+/**
+ * @brief Reads data from the TUN/TAP network driver.
+ *
+ * @param _device the network device to put the data into the network stack
+ * @param buffer the packet to be filled and sent to the network stack
+ *
+ * @return the status of the operation
+ *
+ * @throws ErrorType if an error occurs during the operation
+ */
 status_t
 tun_receive_data(net_device* _device, net_buffer** _buffer)
 {
-	// dprintf("TUN RECV DATA\n");
-	tun_device *device = (tun_device *)_device;
+	/* Recieve Data */
+	tun_device* device = (tun_device*)_device;
 	if (device->fd == -1)
 		return B_FILE_ERROR;
 
 	// TODO: better header space
-	net_buffer *buffer = gBufferModule->create(256);
+	net_buffer* buffer = gBufferModule->create(256);
 	if (buffer == NULL)
 		return ENOBUFS;
 
@@ -276,18 +324,16 @@ tun_receive_data(net_device* _device, net_buffer** _buffer)
 		iovec.iov_base = device->read_buffer;
 		iovec.iov_len = device->frame_size;
 	} else {
-		void *data;
+		void* data;
 		status = gBufferModule->append_size(buffer, device->mtu, &data);
 		if (status == B_OK && data == NULL) {
 			dprintf("tun_receive_data: no read buffer, cannot perform scattered I/O!\n");
 			status = B_NOT_SUPPORTED;
 		}
 		if (status < B_OK) {
-			dprintf("Error in making net_buffer\n");
 			gBufferModule->free(buffer);
 			return status;
 		}
-
 		iovec.iov_base = data;
 		iovec.iov_len = device->frame_size;
 	}
@@ -296,46 +342,44 @@ tun_receive_data(net_device* _device, net_buffer** _buffer)
 	if (bytesRead < 0 || iovec.iov_base == NULL) {
 		device->stats.receive.errors++;
 		status = errno;
-		dprintf("Error in Read\n");
 		gBufferModule->free(buffer);
 		return status;
 	}
 
-	dprintf("%p\nTUN INTERFACE Adding ETHERNET Frame...\n", iovec.iov_base);
-	prepend_ethernet_frame(buffer);
+	if (strncmp(device->name, "tun", 3) == 0) {
+		status = prepend_ethernet_frame(buffer);
+		if (status != B_OK)
+			return status;
+	}
 
 	if (iovec.iov_base == device->read_buffer)
 		status = gBufferModule->append(buffer, iovec.iov_base, buffer->size);
 	else
 		status = gBufferModule->trim(buffer, buffer->size);
+
 	if (status < B_OK) {
 		device->stats.receive.dropped++;
 		gBufferModule->free(buffer);
 		return status;
 	}
 
-	dprintf("Reading %u bytes:\n", buffer->size);
-	void *j = malloc(buffer->size);
-	gBufferModule->read(buffer, 0, j, buffer->size);
-	uint8_t* bytePtr = static_cast<uint8_t*>(j);
-	for (ssize_t i = 0; i < buffer->size; i++) {
-	    uint8_t byte = *(bytePtr + i);
-	    dprintf("%02x", byte);
-	}
-	dprintf("\n");
-	free(j);
-    j = NULL;
-	dprintf("|Protocol: %u | Size: %u | Flags: %u|\n", buffer->protocol, buffer->size, buffer->flags);
-
-	device->stats.receive.bytes += buffer->size;
+	device->stats.receive.bytes += bytesRead;
 	device->stats.receive.packets++;
 
 	*_buffer = buffer;
-	dprintf("TUN MODULE READ RET\n");
 	return B_OK;
 }
 
 
+/**
+ * @brief Sets the maximum transmission unit (MTU) for a network interface.
+ *
+ * @param device a pointer to the network interface
+ * @param mtu the desired MTU value
+ *
+ * @return the status of the operation (B_OK if successful, B_BAD_VALUE if the
+ *         provided MTU is out of range)
+ */
 status_t
 tun_set_mtu(net_device* device, size_t mtu)
 {
@@ -344,7 +388,6 @@ tun_set_mtu(net_device* device, size_t mtu)
 	device->mtu = mtu;
 	return B_OK;
 }
-
 
 status_t
 tun_set_promiscuous(net_device* device, bool promiscuous)
@@ -363,6 +406,7 @@ tun_set_media(net_device* device, uint32 media)
 status_t
 tun_add_multicast(net_device* device, const sockaddr* address)
 {
+	/* Nothing to do for multicast filters as we always accept all frames. */
 	return B_OK;
 }
 
@@ -374,18 +418,24 @@ tun_remove_multicast(net_device* device, const sockaddr* address)
 }
 
 
+/**
+ * @brief Performs various operations on the TUN/TAP network interface.
+ *
+ * @param op The operation to be performed.
+ * @param ... Additional arguments based on the operation.
+ *
+ * @return The status of the operation.
+ */
 static status_t
 tun_std_ops(int32 op, ...)
 {
 	switch (op) {
 		case B_MODULE_INIT:
 		{
-			status_t status = get_module(NET_STACK_MODULE_NAME,
-				(module_info**)&sStackModule);
+			status_t status = get_module(NET_STACK_MODULE_NAME, (module_info**)&sStackModule);
 			if (status < B_OK)
 				return status;
-			status = get_module(NET_BUFFER_MODULE_NAME,
-				(module_info**)&gBufferModule);
+			status = get_module(NET_BUFFER_MODULE_NAME, (module_info**)&gBufferModule);
 			if (status < B_OK) {
 				put_module(NET_STACK_MODULE_NAME);
 				return status;
@@ -425,5 +475,4 @@ net_device_module_info sTunModule = {
 
 module_info* modules[] = {
 	(module_info*)&sTunModule,
-	NULL
-};
+	NULL};
