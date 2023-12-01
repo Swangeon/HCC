@@ -1,5 +1,6 @@
 ## Project Overview
 Gerrit project commit [here](https://review.haiku-os.org/c/haiku/+/6608)
+
 This project, undertaken as part of Google Summer of Code 2023, sets out to implement a robust TUN/TAP driver for Haiku given the increasing demand from the community for a virtual network kernel interface. This project allows for VPN software and other network-related utilities that work with TUN/TAP driver to operate seamlessly on Haiku. Throughout the project's duration, I've documented the rationale behind key design decisions, and offered insights on the interplay between the TUN/TAP driver and Haiku's unique networking architecture in my series of seven progress blog posts. For those interested in trying out the TUN/TAP driver on Haiku (when the code is merged, more on that in a different section), you can use the port of OpenVPN that was made on haikuports [here](https://github.com/haikuports/haikuports/tree/master/net-vpn/openvpn). One last thing to say is that I could not get the TUN interface to work properly due to a lack of Point-to-Point being supported by Haiku but TAP works for both the interface and driver.
 
 ## What Was Done
